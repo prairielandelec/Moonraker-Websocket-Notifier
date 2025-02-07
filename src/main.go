@@ -31,19 +31,19 @@ type PrinterStatus struct {
 			StateMessage string `json:"state_message"` // Capital S
 		} `json:"webhooks"` // Add JSON tag for nested struct
 		VirtualSdcard struct {
-			FilePath     string `json:"file_path"`     // Capital F
-			Progress     int    `json:"progress"`      // Capital P
-			IsActive     bool   `json:"is_active"`     // Capital I
-			FilePosition int    `json:"file_position"` // Capital F
-			FileSize     int    `json:"file_size"`     // Capital F
+			FilePath     string  `json:"file_path"`     // Capital F
+			Progress     float32 `json:"progress"`      // Capital P
+			IsActive     bool    `json:"is_active"`     // Capital I
+			FilePosition int     `json:"file_position"` // Capital F
+			FileSize     int     `json:"file_size"`     // Capital F
 		} `json:"virtual_sdcard"` // Add JSON tag for nested struct
 		PrintStats struct {
-			Filename      string `json:"filename"`       // Capital F
-			TotalDuration int    `json:"total_duration"` // Capital T
-			PrintDuration int    `json:"print_duration"` // Capital P
-			FilamentUsed  int    `json:"filament_used"`  // Capital F
-			State         string `json:"state"`          // Capital S
-			Message       string `json:"message"`        // Capital M
+			Filename      string  `json:"filename"`       // Capital F
+			TotalDuration float32 `json:"total_duration"` // Capital T
+			PrintDuration float32 `json:"print_duration"` // Capital P
+			FilamentUsed  int     `json:"filament_used"`  // Capital F
+			State         string  `json:"state"`          // Capital S
+			Message       string  `json:"message"`        // Capital M
 			Info          struct {
 				TotalLayer   int `json:"total_layer"`   // Capital T
 				CurrentLayer int `json:"current_layer"` // Capital C
@@ -114,7 +114,7 @@ func pushToast(printerStatus PrinterStatus) {
 	notification := toast.Notification{
 		AppID:   "Klipper",
 		Title:   "Printer Status:",
-		Message: fmt.Sprintf("Printer State: %s \nLayer: %d \nTime Remaining: %d", printerStatus.Status.Webhooks.State, printerStatus.Status.PrintStats.Info.CurrentLayer, printerStatus.Status.PrintStats.PrintDuration),
+		Message: fmt.Sprintf("Printer State: %s \nLayer: %d \nTime Remaining: %f", printerStatus.Status.PrintStats.State, printerStatus.Status.PrintStats.Info.CurrentLayer, printerStatus.Status.PrintStats.PrintDuration),
 	}
 	err := notification.Push()
 	if err != nil {
