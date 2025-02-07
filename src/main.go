@@ -17,6 +17,13 @@ type Config struct {
 }
 
 func main() {
+
+	var config Config = parseConfig()
+
+	getStats(config)
+}
+
+func parseConfig() Config {
 	file, err := os.Open("config.json")
 	if err != nil {
 		panic(err)
@@ -29,8 +36,11 @@ func main() {
 	if err := decoder.Decode(&config); err != nil {
 		panic(err)
 	}
+	return config
+}
 
-	res, err := http.Get(config.Server.Address)
+func getStats(config Config) {
+	res, err := http.Get(config.Server.Address + "/printer/objects/query?webhooks&virtual_sdcard&print_stats")
 	if err != nil {
 		log.Fatal(err)
 	}
