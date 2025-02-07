@@ -7,6 +7,10 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"sync"
+	"time"
+
+	"gopkg.in/toast.v1"
 )
 
 type Config struct {
@@ -48,13 +52,21 @@ type PrinterStatus struct {
 	} `json:"status"` // Add JSON tag for nested struct
 }
 
+var lastPrinterStatus PrinterStatus // Store the last fetched status
+var mutex sync.Mutex                // Mutex to protect lastPrinterStatus
+
 func main() {
 
 	var config Config = parseConfig()
 
-	var printerStatus PrinterStatus = getStats(config)
-	fmt.Println("printer status filename: ", printerStatus.Status.PrintStats.Filename)
-	fmt.Println("Status State: ", printerStatus.Status.PrintStats.State)
+	printerStatus := getStats(config)
+	lastPrinterStatus = printerStatus
+	pushToast(printerStatus)
+
+	go pollAndNotify(config)
+
+	select {}
+
 }
 
 func parseConfig() Config {
@@ -96,4 +108,32 @@ func getStats(config Config) PrinterStatus {
 
 	printerStatus := moonrakerResponse.Result // Extract the PrinterStatus
 	return printerStatus
+}
+
+func pushToast(printerStatus PrinterStatus) {
+	notification := toast.Notification{
+		AppID:   "Klipper",
+		Title:   "Printer Status:",
+		Message: fmt.Sprintf("Printer State: %s \nLayer: %d \nTime Remaining: %d", printerStatus.Status.Webhooks.State, printerStatus.Status.PrintStats.Info.CurrentLayer, printerStatus.Status.PrintStats.PrintDuration),
+	}
+	err := notification.Push()
+	if err != nil {
+		log.Fatalln(err)
+	}
+}
+
+func pollAndNotify(config Config) {
+	ticker := time.NewTicker(5 * time.Second)
+	defer ticker.Stop()
+
+	for range ticker.C {
+		printerStatus := getStats(config)
+
+		mutex.Lock()
+		if printerStatus != lastPrinterStatus {
+			pushToast(printerStatus)
+			lastPrinterStatus = printerStatus
+		}
+		mutex.Unlock()
+	}
 }
