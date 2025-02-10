@@ -1,11 +1,16 @@
-package main
+package PollAndNotify
 
 import (
 	"encoding/json"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
 	"os"
+	"sync"
+	"time"
+
+	"gopkg.in/toast.v1"
 )
 
 type Config struct {
@@ -47,21 +52,20 @@ type PrinterStatus struct {
 	} `json:"status"` // Add JSON tag for nested struct
 }
 
-type JsonRPC struct {
-	Id      string `json:"id"`
-	Version string `json:"jsonrpc"`
-	Method  string `json:"method"`
-	Result  string `json"result"`
-}
-
-var oneshotToken string
+var lastPrinterStatus PrinterStatus // Store the last fetched status
+var mutex sync.Mutex                // Mutex to protect lastPrinterStatus
 
 func main() {
+
 	var config Config = parseConfig()
-	if !checkConnection(config) {
-		log.Fatal("Could Not Connect!")
-	}
-	getOneshot(config)
+
+	printerStatus := getStats(config)
+	lastPrinterStatus = printerStatus
+	pushToast(printerStatus)
+
+	go pollAndNotify(config)
+
+	select {}
 
 }
 
@@ -81,42 +85,55 @@ func parseConfig() Config {
 	return config
 }
 
-func checkConnection(config Config) (ConnectionStatus bool) {
-	res, err := http.Get(config.Server.Address)
+func getStats(config Config) PrinterStatus {
+	res, err := http.Get(config.Server.Address + "/printer/objects/query?webhooks&virtual_sdcard&print_stats")
 	if err != nil {
 		log.Fatal(err)
-		return false
 	}
-	fmt.Printf("Got Response Code %d\n", res.StatusCode)
-	if res.StatusCode == 200 {
-		return true
+	body, err := io.ReadAll(res.Body)
+	res.Body.Close()
+	if res.StatusCode > 299 {
+		log.Fatalf("Response failed with status code: %d and\nbody: %s\n", res.StatusCode, body)
+	}
+	if err != nil {
+		log.Fatal(err)
+	}
+	fmt.Printf("%s", body)
+
+	var moonrakerResponse MoonrakerResponse // Use the wrapper struct
+	err = json.Unmarshal(body, &moonrakerResponse)
+	if err != nil {
+		log.Printf("Decoding error: %v\nBody:%s\n", err, body)
 	}
 
-	return false
+	printerStatus := moonrakerResponse.Result // Extract the PrinterStatus
+	return printerStatus
 }
 
-func getOneshot(config Config) {
-	res, err := http.Get(config.Server.Address + "/access/oneshot_token")
+func pushToast(printerStatus PrinterStatus) {
+	notification := toast.Notification{
+		AppID:   "Klipper",
+		Title:   "Printer Status:",
+		Message: fmt.Sprintf("Printer State: %s \nLayer: %d \nTime Remaining: %f", printerStatus.Status.PrintStats.State, printerStatus.Status.PrintStats.Info.CurrentLayer, printerStatus.Status.PrintStats.PrintDuration),
+	}
+	err := notification.Push()
 	if err != nil {
-		log.Fatalf("Could not get One Shot Token Error: ", err)
-		return
+		log.Fatalln(err)
 	}
-	defer res.Body.Close()
+}
 
-	var data map[string]interface{}
-	err = json.NewDecoder(res.Body).Decode(&data) // Decode directly from the response body
-	if err != nil {
-		log.Fatalf("Error decoding JSON:", err)
-		return
+func pollAndNotify(config Config) {
+	ticker := time.NewTicker(5 * time.Second)
+	defer ticker.Stop()
+
+	for range ticker.C {
+		printerStatus := getStats(config)
+
+		mutex.Lock()
+		if printerStatus != lastPrinterStatus {
+			pushToast(printerStatus)
+			lastPrinterStatus = printerStatus
+		}
+		mutex.Unlock()
 	}
-	resultInterface, ok := data["result"]
-	if !ok || resultInterface == nil {
-		log.Fatal("No Token Found")
-		return
-	}
-
-	oneshotToken := fmt.Sprintf("%v", resultInterface)
-	fmt.Printf("Got token %s\n", oneshotToken)
-	return
-
 }
