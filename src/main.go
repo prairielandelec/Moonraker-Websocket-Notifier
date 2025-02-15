@@ -67,10 +67,13 @@ type JsonRPCNotify struct {
 	Method  string `json:"method"`
 	Result  string `json:"result"`
 }
+type IDOnly struct {
+	ID *int `json:"id"`
+}
 
 var oneshotToken string
 
-var requestCounter int
+var requestCounter int = 1
 
 func main() {
 	var config Config = parseConfig()
@@ -103,7 +106,18 @@ func main() {
 					log.Println("read:", err)
 					return
 				}
-				log.Printf("recv: %s", message)
+				//log.Printf("recv: %s", message)
+				gotID := &IDOnly{}
+				parseerr := json.Unmarshal(message, gotID)
+				if parseerr != nil {
+					log.Println("parse err", parseerr)
+				}
+				if gotID.ID != nil {
+					log.Printf("got an ID of: %v\nContent:\n%s\n", *gotID.ID, message)
+				} else {
+					log.Println("ID field is missing or null in the JSON")
+					// Do something else here
+				}
 			}
 		}()
 		command := &JsonRPCRequest{Id: requestCounter, Version: "2.0", Method: "server.info"}
