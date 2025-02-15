@@ -6,6 +6,10 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"os/signal"
+	"time"
+
+	"github.com/gorilla/websocket"
 )
 
 type Config struct {
@@ -47,21 +51,88 @@ type PrinterStatus struct {
 	} `json:"status"` // Add JSON tag for nested struct
 }
 
-type JsonRPC struct {
-	Id      string `json:"id"`
+type JsonRPCRequest struct {
+	Id      int    `json:"id"`
 	Version string `json:"jsonrpc"`
 	Method  string `json:"method"`
-	Result  string `json"result"`
+}
+type JsonRPCRepsonse struct {
+	Id      int    `json:"id"`
+	Version string `json:"jsonrpc"`
+	Method  string `json:"method"`
+	Result  string `json:"result"`
+}
+type JsonRPCNotify struct {
+	Version string `json:"jsonrpc"`
+	Method  string `json:"method"`
+	Result  string `json:"result"`
 }
 
 var oneshotToken string
 
+var requestCounter int
+
 func main() {
 	var config Config = parseConfig()
+	interrupt := make(chan os.Signal, 1)
+	signal.Notify(interrupt, os.Interrupt)
+
 	if !checkConnection(config) {
 		log.Fatal("Could Not Connect!")
 	}
-	getOneshot(config)
+	gotOneshot := getOneshot(config)
+
+	fmt.Printf("Oneshot: %v", gotOneshot)
+
+	if gotOneshot {
+		url := "ws://" + config.Server.Address + "/websocket?token=" + oneshotToken
+		log.Printf("connecting to %s", url)
+
+		c, _, err := websocket.DefaultDialer.Dial(url, nil)
+		if err != nil {
+			log.Fatal("dial:", err)
+		}
+		defer c.Close()
+
+		done := make(chan struct{})
+		go func() {
+			defer close(done)
+			for {
+				_, message, err := c.ReadMessage()
+				if err != nil {
+					log.Println("read:", err)
+					return
+				}
+				log.Printf("recv: %s", message)
+			}
+		}()
+		command := &JsonRPCRequest{Id: requestCounter, Version: "2.0", Method: "server.info"}
+		if wserr := c.WriteJSON(command); wserr != nil {
+			log.Printf("Socket Send Error: %v", wserr)
+		}
+
+		for {
+			select {
+			case <-done:
+				return
+			case <-interrupt:
+				log.Println("interrupt")
+
+				// Cleanly close the connection by sending a close message and then
+				// waiting (with timeout) for the server to close the connection.
+				err := c.WriteMessage(websocket.CloseMessage, websocket.FormatCloseMessage(websocket.CloseNormalClosure, ""))
+				if err != nil {
+					log.Println("write close:", err)
+					return
+				}
+				select {
+				case <-done:
+				case <-time.After(time.Second):
+				}
+				return
+			}
+		}
+	}
 
 }
 
@@ -72,7 +143,6 @@ func parseConfig() Config {
 	}
 	defer file.Close()
 
-	// Decode the JSON data into the config struct
 	decoder := json.NewDecoder(file)
 	var config Config
 	if err := decoder.Decode(&config); err != nil {
@@ -82,41 +152,37 @@ func parseConfig() Config {
 }
 
 func checkConnection(config Config) (ConnectionStatus bool) {
-	res, err := http.Get(config.Server.Address)
+	res, err := http.Get("http://" + config.Server.Address)
 	if err != nil {
 		log.Fatal(err)
 		return false
 	}
 	fmt.Printf("Got Response Code %d\n", res.StatusCode)
-	if res.StatusCode == 200 {
-		return true
-	}
 
-	return false
+	return res.StatusCode == 200
 }
 
-func getOneshot(config Config) {
-	res, err := http.Get(config.Server.Address + "/access/oneshot_token")
+func getOneshot(config Config) (rc bool) {
+	res, err := http.Get("http://" + config.Server.Address + "/access/oneshot_token")
 	if err != nil {
-		log.Fatalf("Could not get One Shot Token Error: ", err)
-		return
+		log.Fatalf("Could not get One Shot Token Error: %v", err)
+		return false
 	}
 	defer res.Body.Close()
 
 	var data map[string]interface{}
 	err = json.NewDecoder(res.Body).Decode(&data) // Decode directly from the response body
 	if err != nil {
-		log.Fatalf("Error decoding JSON:", err)
-		return
+		log.Fatalf("Error decoding JSON: %v", err)
+		return false
 	}
 	resultInterface, ok := data["result"]
 	if !ok || resultInterface == nil {
 		log.Fatal("No Token Found")
-		return
+		return false
 	}
 
-	oneshotToken := fmt.Sprintf("%v", resultInterface)
+	oneshotToken = fmt.Sprintf("%v", resultInterface)
 	fmt.Printf("Got token %s\n", oneshotToken)
-	return
-
+	return true
 }
