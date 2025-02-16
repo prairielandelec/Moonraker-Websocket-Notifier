@@ -71,6 +71,11 @@ type IDOnly struct {
 	ID *int `json:"id"`
 }
 
+type KlippyConnectionStatus struct {
+	Connected bool   `json:"klippy_connected"`
+	State     string `json:"klippy_state"`
+}
+
 var oneshotToken string
 
 var requestCounter int = 1
@@ -123,7 +128,7 @@ func main() {
 			}
 		}()
 
-		if getKlippyStatus(c, id_message) {
+		if getKlippyStatus(c, id_message, false) {
 			log.Printf("we are connected\n")
 		}
 
@@ -203,7 +208,7 @@ func getOneshot(config Config) (rc bool) {
 	return true
 }
 
-func getKlippyStatus(c *websocket.Conn, id_message chan json.RawMessage) (connected bool) {
+func getKlippyStatus(c *websocket.Conn, id_message chan json.RawMessage, secondAttempt bool) (connected bool) {
 	timeout := 5 * time.Second
 	command := &JsonRPCRequest{Id: requestCounter, Version: "2.0", Method: "server.info"}
 	currentCount := requestCounter
@@ -221,7 +226,21 @@ func getKlippyStatus(c *websocket.Conn, id_message chan json.RawMessage) (connec
 			}
 			if currentCount == jsonResponse.Id {
 				log.Printf("IDs Match!\nMethod:\n%v\nResponse:\n%s\n", jsonResponse.Method, jsonResponse.Result)
-				return true
+				klippyState := &KlippyConnectionStatus{}
+				json.Unmarshal(jsonResponse.Result, klippyState)
+				if klippyState.Connected && klippyState.State == "ready" {
+					log.Println("Klippy Connected & Ready!")
+					return true
+				} else if klippyState.Connected && klippyState.State == "startup" && !secondAttempt {
+					log.Println("Klippy in startup, waiting 10 secs & checking again")
+					time.Sleep(10 * time.Second)
+					if getKlippyStatus(c, id_message, true) {
+						log.Println("Klippy Connected & Ready!")
+						return true
+					}
+					log.Println("Klippy in startup for more than 10 seconds. Aborting")
+					return false
+				}
 			}
 		case <-time.After(timeout):
 			log.Println("Status Timeout!")
