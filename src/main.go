@@ -57,10 +57,10 @@ type JsonRPCRequest struct {
 	Method  string `json:"method"`
 }
 type JsonRPCRepsonse struct {
-	Id      int    `json:"id"`
-	Version string `json:"jsonrpc"`
-	Method  string `json:"method"`
-	Result  string `json:"result"`
+	Id      int             `json:"id"`
+	Version string          `json:"jsonrpc"`
+	Method  string          `json:"method"`
+	Result  json.RawMessage `json:"result"`
 }
 type JsonRPCNotify struct {
 	Version string `json:"jsonrpc"`
@@ -98,6 +98,7 @@ func main() {
 		defer c.Close()
 
 		done := make(chan struct{})
+		id_message := make(chan json.RawMessage)
 		go func() {
 			defer close(done)
 			for {
@@ -114,15 +115,16 @@ func main() {
 				}
 				if gotID.ID != nil {
 					log.Printf("got an ID of: %v\nContent:\n%s\n", *gotID.ID, message)
+					id_message <- message
 				} else {
 					log.Println("ID field is missing or null in the JSON")
 					// Do something else here
 				}
 			}
 		}()
-		command := &JsonRPCRequest{Id: requestCounter, Version: "2.0", Method: "server.info"}
-		if wserr := c.WriteJSON(command); wserr != nil {
-			log.Printf("Socket Send Error: %v", wserr)
+
+		if getKlippyStatus(c, id_message) {
+			log.Printf("we are connected\n")
 		}
 
 		for {
@@ -199,4 +201,31 @@ func getOneshot(config Config) (rc bool) {
 	oneshotToken = fmt.Sprintf("%v", resultInterface)
 	fmt.Printf("Got token %s\n", oneshotToken)
 	return true
+}
+
+func getKlippyStatus(c *websocket.Conn, id_message chan json.RawMessage) (connected bool) {
+	timeout := 5 * time.Second
+	command := &JsonRPCRequest{Id: requestCounter, Version: "2.0", Method: "server.info"}
+	currentCount := requestCounter
+	if wserr := c.WriteJSON(command); wserr != nil {
+		log.Printf("Socket Send Error: %v", wserr)
+	}
+
+	for {
+		select {
+		case data := <-id_message:
+			jsonResponse := &JsonRPCRepsonse{}
+			if statuserr := json.Unmarshal(data, jsonResponse); statuserr != nil {
+				log.Println("Parsing of status failed: ", statuserr)
+				return false
+			}
+			if currentCount == jsonResponse.Id {
+				log.Printf("IDs Match!\nMethod:\n%v\nResponse:\n%s\n", jsonResponse.Method, jsonResponse.Result)
+				return true
+			}
+		case <-time.After(timeout):
+			log.Println("Status Timeout!")
+			return
+		}
+	}
 }
