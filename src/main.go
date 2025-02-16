@@ -71,9 +71,33 @@ type IDOnly struct {
 	ID *int `json:"id"`
 }
 
+type MethodOnly struct {
+	Method string `json:"method"`
+}
+
 type KlippyConnectionStatus struct {
 	Connected bool   `json:"klippy_connected"`
 	State     string `json:"klippy_state"`
+}
+
+type PrinterStatusNotif struct {
+	Connected     bool
+	Layer         int
+	TimeRemaining time.Time
+	Progress      int
+	Filename      string
+}
+
+type PrinterStatusSubscribe struct {
+	Id      int    `json:"id"`
+	Version string `json:"jsonrpc"`
+	Method  string `json:"method"`
+	Params  struct {
+		Objects struct {
+			VirtualSdcard *string `json:"virtual_sdcard"`
+			PrintStats    *string `json:"print_stats"`
+		} `json:"objects"`
+	} `json:"params"`
 }
 
 var oneshotToken string
@@ -123,6 +147,15 @@ func main() {
 					id_message <- message
 				} else {
 					log.Println("ID field is missing or null in the JSON")
+					noIdMethod := &MethodOnly{}
+					hasmethod := json.Unmarshal(message, noIdMethod)
+					if hasmethod != nil {
+						log.Println("Parse Error, no method")
+					}
+					//log.Printf("%s\n", message)
+					if noIdMethod.Method == "notify_status_update" {
+						log.Printf("\n\nGot a Status Notify Update\n%s\n\n", message)
+					}
 					// Do something else here
 				}
 			}
@@ -130,6 +163,9 @@ func main() {
 
 		if getKlippyStatus(c, id_message, false) {
 			log.Printf("we are connected\n")
+			if subscribeToNotifs(c, id_message) {
+				log.Println("Subscription Successfull. Ready to notify")
+			}
 		}
 
 		for {
@@ -212,6 +248,7 @@ func getKlippyStatus(c *websocket.Conn, id_message chan json.RawMessage, secondA
 	timeout := 5 * time.Second
 	command := &JsonRPCRequest{Id: requestCounter, Version: "2.0", Method: "server.info"}
 	currentCount := requestCounter
+	requestCounter++
 	if wserr := c.WriteJSON(command); wserr != nil {
 		log.Printf("Socket Send Error: %v", wserr)
 	}
@@ -244,7 +281,46 @@ func getKlippyStatus(c *websocket.Conn, id_message chan json.RawMessage, secondA
 			}
 		case <-time.After(timeout):
 			log.Println("Status Timeout!")
-			return
+			return false
+		}
+	}
+}
+
+func subscribeToNotifs(c *websocket.Conn, id_message chan json.RawMessage) (connected bool) {
+	timeout := 5 * time.Second
+	command := &PrinterStatusSubscribe{Id: requestCounter, Version: "2.0", Method: "printer.objects.subscribe"}
+	currentCount := requestCounter
+	requestCounter++
+
+	jsonBytes, err := json.MarshalIndent(command, "", "    ") // Use MarshalIndent
+	if err != nil {
+		log.Printf("Error marshaling JSON: %v", err)
+		// Handle the error appropriately (e.g., return, panic)
+	} else {
+		log.Printf("Sending JSON command:\n%s", jsonBytes) // Print the pretty-printed JSON
+	}
+
+	if wserr := c.WriteJSON(command); wserr != nil {
+		log.Printf("Socket Send Error: %v", wserr)
+	}
+
+	for {
+		select {
+		case data := <-id_message:
+			jsonResponse := &JsonRPCRepsonse{}
+			if statuserr := json.Unmarshal(data, jsonResponse); statuserr != nil {
+				log.Println("Parsing of status failed: ", statuserr)
+				return false
+			}
+			if currentCount == jsonResponse.Id {
+				log.Printf("IDs Match!\nMethod:\n%v\nResponse:\n%s\n", jsonResponse.Method, jsonResponse.Result)
+				klippyState := &KlippyConnectionStatus{}
+				json.Unmarshal(jsonResponse.Result, klippyState)
+				return true
+			}
+		case <-time.After(timeout):
+			log.Println("Status Timeout!")
+			return false
 		}
 	}
 }
