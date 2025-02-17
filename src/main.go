@@ -3,7 +3,9 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"io"
 	"log"
+	"math"
 	"net/http"
 	"os"
 	"os/signal"
@@ -81,11 +83,40 @@ type KlippyConnectionStatus struct {
 }
 
 type PrinterStatusNotif struct {
-	Connected     bool
-	Layer         int
-	TimeRemaining time.Time
-	Progress      int
-	Filename      string
+	Connected            bool
+	Layer                int
+	TotalLayers          int
+	TimeRemainingSeconds float64
+	TimeRemaining        HHMMSS
+	Progress             float32
+	Filename             string
+	State                string
+}
+
+type HHMMSS struct {
+	Hours   int
+	Minutes int
+	Seconds int
+}
+
+type PrinterStatusJSON struct {
+	Params []json.RawMessage `json:"params"`
+}
+
+type PrinterStatusParams struct {
+	VirtualSdcard struct {
+		Progress float32 `json:"progress"`  // Capital P
+		IsActive bool    `json:"is_active"` // Capital I
+	} `json:"virtual_sdcard"` // Add JSON tag for nested struct
+	PrintStats struct {
+		Filename      string  `json:"filename"`       // Capital F
+		PrintDuration float64 `json:"print_duration"` // Capital P
+		State         string  `json:"state"`          // Capital S
+		Info          struct {
+			TotalLayer   int `json:"total_layer"`   // Capital T
+			CurrentLayer int `json:"current_layer"` // Capital C
+		} `json:"info"` // Add JSON tag for nested struct
+	} `json:"print_stats"` // Add JSON tag for nested struct
 }
 
 type PrinterStatusSubscribe struct {
@@ -94,7 +125,7 @@ type PrinterStatusSubscribe struct {
 	Method  string `json:"method"`
 	Params  struct {
 		Objects struct {
-			VirtualSdcard *string `json:"virtual_sdcard"`
+			VirtualSdcard *string `json:"virtual_sdcard"` //need to be encoded as nulls so we use pointers
 			PrintStats    *string `json:"print_stats"`
 		} `json:"objects"`
 	} `json:"params"`
@@ -104,7 +135,15 @@ var oneshotToken string
 
 var requestCounter int = 1
 
+var CurrentPrinterStatus PrinterStatusNotif
+
 func main() {
+	logFile, err := os.OpenFile("log.txt", os.O_CREATE|os.O_APPEND|os.O_RDWR, 0666)
+	if err != nil {
+		panic(err)
+	}
+	mw := io.MultiWriter(os.Stdout, logFile)
+	log.SetOutput(mw)
 	var config Config = parseConfig()
 	interrupt := make(chan os.Signal, 1)
 	signal.Notify(interrupt, os.Interrupt)
@@ -143,18 +182,19 @@ func main() {
 					log.Println("parse err", parseerr)
 				}
 				if gotID.ID != nil {
-					log.Printf("got an ID of: %v\nContent:\n%s\n", *gotID.ID, message)
+					//log.Printf("got an ID of: %v\nContent:\n%s\n", *gotID.ID, message)
 					id_message <- message
 				} else {
-					log.Println("ID field is missing or null in the JSON")
+					//log.Println("ID field is missing or null in the JSON")
 					noIdMethod := &MethodOnly{}
 					hasmethod := json.Unmarshal(message, noIdMethod)
 					if hasmethod != nil {
 						log.Println("Parse Error, no method")
 					}
-					//log.Printf("%s\n", message)
+					//log.Printf("\n\n%s\n\n", message)
 					if noIdMethod.Method == "notify_status_update" {
-						log.Printf("\n\nGot a Status Notify Update\n%s\n\n", message)
+						log.Printf("\n\nGot a Status Notify Update\n\n")
+						ParseStatusNotif(message)
 					}
 					// Do something else here
 				}
@@ -322,5 +362,65 @@ func subscribeToNotifs(c *websocket.Conn, id_message chan json.RawMessage) (conn
 			log.Println("Status Timeout!")
 			return false
 		}
+	}
+}
+
+func ParseStatusNotif(payload json.RawMessage) {
+	parsedPayload := &PrinterStatusJSON{}
+
+	parseerr := json.Unmarshal(payload, parsedPayload)
+
+	if parseerr != nil {
+		log.Println("parse err", parseerr)
+	}
+	if len(parsedPayload.Params) > 0 {
+		parsedParams := &PrinterStatusParams{}
+
+		paramseerr := json.Unmarshal(parsedPayload.Params[0], parsedParams) //The object we care about will always be index 0 according to Moonraker Docs. Index 2 is time rxd
+
+		if paramseerr != nil {
+			log.Println("params parse err", paramseerr)
+		}
+		if CurrentPrinterStatus.Layer != parsedParams.PrintStats.Info.CurrentLayer {
+			CurrentPrinterStatus.Layer = parsedParams.PrintStats.Info.CurrentLayer
+		}
+		if CurrentPrinterStatus.TotalLayers != parsedParams.PrintStats.Info.TotalLayer {
+			CurrentPrinterStatus.TotalLayers = parsedParams.PrintStats.Info.TotalLayer
+		}
+		if CurrentPrinterStatus.TimeRemainingSeconds != parsedParams.PrintStats.PrintDuration {
+			CurrentPrinterStatus.TimeRemainingSeconds = parsedParams.PrintStats.PrintDuration
+			CurrentPrinterStatus.TimeRemaining = FormatSecondsToHHMMSS(parsedParams.PrintStats.PrintDuration)
+		}
+		if CurrentPrinterStatus.State != parsedParams.PrintStats.State {
+			CurrentPrinterStatus.State = parsedParams.PrintStats.State
+		}
+		if CurrentPrinterStatus.Progress != parsedParams.VirtualSdcard.Progress {
+			CurrentPrinterStatus.Progress = parsedParams.VirtualSdcard.Progress
+		}
+		if CurrentPrinterStatus.Filename != parsedParams.PrintStats.Filename {
+			CurrentPrinterStatus.Filename = parsedParams.PrintStats.Filename
+		}
+		log.Printf("Parsed Notif\nCurrent: %+v\nNew (should match)%+s", CurrentPrinterStatus, parsedPayload)
+	}
+
+}
+
+func FormatSecondsToHHMMSS(seconds float64) HHMMSS {
+	// Handle negative durations
+	sign := 1
+	if seconds < 0 {
+		sign = -1
+		seconds = math.Abs(seconds)
+	}
+
+	totalSeconds := int(seconds)
+	hours := totalSeconds / 3600
+	minutes := (totalSeconds % 3600) / 60
+	secondsOnly := totalSeconds % 60
+
+	return HHMMSS{
+		Hours:   hours * sign, // Apply sign to hours
+		Minutes: minutes,
+		Seconds: secondsOnly,
 	}
 }

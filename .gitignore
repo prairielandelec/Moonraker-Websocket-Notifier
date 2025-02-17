@@ -24,3 +24,6 @@ go.work.sum
 # env file
 .env
 /src/config.json
+/src/log.txt
+/src/log copy2.json
+/src/log copy.json
