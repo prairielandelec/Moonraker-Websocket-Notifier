@@ -354,8 +354,7 @@ func subscribeToNotifs(c *websocket.Conn, id_message chan json.RawMessage) (conn
 			}
 			if currentCount == jsonResponse.Id {
 				log.Printf("IDs Match!\nMethod:\n%v\nResponse:\n%s\n", jsonResponse.Method, jsonResponse.Result)
-				klippyState := &KlippyConnectionStatus{}
-				json.Unmarshal(jsonResponse.Result, klippyState)
+				ParseStatusNotif(jsonResponse.Result)
 				return true
 			}
 		case <-time.After(timeout):
